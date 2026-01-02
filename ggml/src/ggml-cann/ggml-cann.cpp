@@ -1569,7 +1569,12 @@ static const char * ggml_backend_cann_host_buffer_name(ggml_backend_buffer_t buf
  * @param buffer The CANN host buffer to free.
  */
 static void ggml_backend_cann_host_buffer_free(ggml_backend_buffer_t buffer) {
+#ifdef ASCEND_310B
+    void * rawPtr = ((void **)buffer->context)[-1];
+    ACL_CHECK(aclrtFreeHost(rawPtr));
+#else
     ACL_CHECK(aclrtFreeHost(buffer->context));
+#endif
 }
 
 /**
@@ -1585,7 +1590,11 @@ static void * ggml_cann_host_malloc(size_t size) {
     }
 
     const size_t alignment = 128;
+#ifdef ASCEND_310B
+    size                   = GGML_PAD(size, alignment) + alignment*2 - 1;
+#else
     size                   = GGML_PAD(size, alignment);
+#endif
     if (size == 0) {
         size = alignment;
     }
@@ -1597,6 +1606,19 @@ static void * ggml_cann_host_malloc(size_t size) {
                       aclGetRecentErrMsg());
         return nullptr;
     }
+
+#ifdef ASCEND_310B
+    uintptr_t hostPtrAddr = (uintptr_t)hostPtr;
+    uintptr_t hostPtrPadAddr = GGML_PAD(hostPtrAddr, alignment);
+    uintptr_t hostFinalPadAddr = hostPtrPadAddr + 128;
+    hostPtr = (void *)hostFinalPadAddr;
+    void **slot = (void **)hostFinalPadAddr;
+    slot[-1] = (void *)hostPtrAddr;
+
+    GGML_ASSERT((uintptr_t)hostPtr % alignment == 0 && "buffer pointer must be aligned");
+    GGML_ASSERT((((void **)hostPtr)[-1] == (void *)hostPtrAddr) && "raw pointer don't match");
+#endif
+
     return hostPtr;
 }
 
