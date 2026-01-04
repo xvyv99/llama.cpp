@@ -1455,6 +1455,18 @@ static size_t ggml_backend_cann_buffer_type_get_alloc_size(ggml_backend_buffer_t
             size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);
         }
     } else if (weight_to_nz && is_matmul_weight((const ggml_tensor *) tensor)) {
+#ifdef ASCEND_310B
+        int64_t m = tensor->ne[1];
+        int64_t n = tensor->ne[0];
+
+        // FP16/BF16: align to 16
+        int64_t am = (m + 15) / 16 * 16;
+        int64_t an = (n + 15) / 16 * 16;
+
+        int64_t fallback_size = am * an;
+
+        size = std::max(size, static_cast<size_t>(fallback_size));
+#else
         // NZ format weight are not support quantized yet.
         // If ND tensor transform to NZ, size may changed.
         int64_t shape[] = { tensor->ne[1], tensor->ne[0] };
@@ -1465,6 +1477,7 @@ static size_t ggml_backend_cann_buffer_type_get_alloc_size(ggml_backend_buffer_t
         ACL_CHECK(aclnnCalculateMatmulWeightSizeV2(acl_shape, ggml_cann_type_mapping(tensor->type), &new_size));
         ACL_CHECK(aclDestroyIntArray(acl_shape));
         size = std::max(size, new_size);
+#endif
     }
 
     return size;
@@ -1473,6 +1486,9 @@ static size_t ggml_backend_cann_buffer_type_get_alloc_size(ggml_backend_buffer_t
 }
 
 static bool ggml_backend_cann_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
+#ifdef ASCEND_310B
+    return true;
+#endif
     return false;
 
     GGML_UNUSED(buft);
@@ -2229,6 +2245,16 @@ static enum ggml_status ggml_backend_cann_graph_compute(ggml_backend_t backend, 
  */
 static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     switch (op->op) {
+#ifdef ASCEND_310B
+        case GGML_OP_NONE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            return true;
+        default:
+            return false;
+#else
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(op)) {
                 case GGML_UNARY_OP_ABS:
@@ -2499,6 +2525,7 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
             return true;
         default:
             return false;
+#endif
     }
 
     GGML_UNUSED(dev);
