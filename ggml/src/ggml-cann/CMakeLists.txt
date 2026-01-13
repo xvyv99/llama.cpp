@@ -59,6 +59,19 @@ if (CANN_INSTALL_DIR)
         ${CANN_INSTALL_DIR}/acllib/include
     )
 
+    if(SOC_VERSION STREQUAL "ascend310b1")
+        message(STATUS "CANN: Adding customize opp for ascend310b1")
+        list(APPEND CANN_INCLUDE_DIRS
+            ${CANN_INSTALL_DIR}/opp/vendors/customize/op_api/include
+        )
+        link_directories(
+            ${CANN_INSTALL_DIR}/opp/vendors/customize/op_api/lib
+        )
+        list(APPEND CANN_LIBRARIES
+            cust_opapi
+        )
+    endif()
+
     list(APPEND CANN_LIBRARIES
         ascendcl
         nnopbase

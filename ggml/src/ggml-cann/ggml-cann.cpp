@@ -24,6 +24,7 @@
 
 #include "ggml-backend-impl.h"
 #include "ggml-cann/aclnn_ops.h"
+#include "ggml-cann/acl_custom_ops.h"
 #include "ggml-cann/common.h"
 #include "ggml-impl.h"
 #include "ggml.h"
@@ -172,9 +173,13 @@ static ggml_cann_device_info ggml_cann_init() {
         prop.location.type        = ACL_MEM_LOCATION_TYPE_DEVICE;
         prop.location.id          = id;
         prop.reserve              = 0;
+#ifdef ASCEND_310B
+        info.devices[id].vmm      = false;
+#else
         err                       = aclrtMemGetAllocationGranularity(&prop, ACL_RT_MEM_ALLOC_GRANULARITY_RECOMMENDED,
                                                                      &info.devices[id].vmm_granularity);
         info.devices[id].vmm      = err == ACL_SUCCESS;
+#endif
 
         size_t free, total;
         ggml_backend_cann_get_device_memory(id, &free, &total);
@@ -1217,7 +1222,14 @@ static void ggml_backend_cann_buffer_set_tensor(ggml_backend_buffer_t buffer,
     // Why aclrtSynchronizeDevice?
 
     // Only check env once.
+#ifdef ASCEND_310B
+    static bool weight_to_nz = false;
+    if (parse_bool(get_env("GGML_CANN_WEIGHT_NZ").value_or("off"))) {
+        GGML_LOG_WARN("GGML_CANN_WEIGHT_NZ is not supported on ASCEND_310B\n");
+    }
+#else
     static bool weight_to_nz = parse_bool(get_env("GGML_CANN_WEIGHT_NZ").value_or("on"));
+#endif
     if (!need_transform(tensor->type)) {
         ACL_CHECK(aclrtMemcpy((char *) tensor->data + offset, size, data, size, ACL_MEMCPY_HOST_TO_DEVICE));
         if (weight_to_nz && is_matmul_weight((const ggml_tensor *) tensor)) {
@@ -1700,6 +1712,13 @@ ggml_backend_buffer_type_t ggml_backend_cann_host_buffer_type() {
  */
 static bool ggml_cann_compute_forward(ggml_backend_cann_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
+#ifdef ASCEND_310B
+        case GGML_OP_MUL_MAT:
+            ggml_cann_mul_mat_custom(ctx, dst);
+            break;
+        default:
+            return false;
+#else
         case GGML_OP_REPEAT:
             ggml_cann_repeat(ctx, dst);
             break;
@@ -1931,6 +1950,7 @@ static bool ggml_cann_compute_forward(ggml_backend_cann_context & ctx, struct gg
             break;
         default:
             return false;
+#endif
     }
 
     return true;
@@ -2060,6 +2080,10 @@ static bool ggml_backend_cann_cpy_tensor_async(ggml_backend_t      backend_src,
 #ifdef ASCEND_310P
         // TODO: Support 310p P2P copy
         return false;
+#endif
+
+#ifdef ASCEND_310B
+    return false;
 #endif
         ggml_backend_cann_buffer_context * buf_ctx_src = (ggml_backend_cann_buffer_context *) buf_src->context;
         ggml_backend_cann_buffer_context * buf_ctx_dst = (ggml_backend_cann_buffer_context *) buf_dst->context;
@@ -2246,6 +2270,19 @@ static enum ggml_status ggml_backend_cann_graph_compute(ggml_backend_t backend, 
 static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     switch (op->op) {
 #ifdef ASCEND_310B
+        case GGML_OP_MUL_MAT:
+            {
+                switch (op->src[0]->type) {
+                    case GGML_TYPE_F16:
+                    case GGML_TYPE_F32:
+                        return true;
+                    case GGML_TYPE_Q8_0:
+                    case GGML_TYPE_Q4_0:
+                        return false;
+                    default:
+                        return false;
+                }
+            }
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
