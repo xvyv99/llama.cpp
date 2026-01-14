@@ -5,6 +5,19 @@
 #include <future>
 #include <vector>
 #include <cstring>
+#include <iostream>
+
+#include <acl/acl.h>
+#include "catlass_kernel.h"
+
+// Macro function for unwinding acl errors.
+#define ACL_CHECK(status)                                                                                              \
+    do {                                                                                                               \
+        aclError error = status;                                                                                       \
+        if (error != ACL_ERROR_NONE) {                                                                                 \
+            std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << error << std::endl;                            \
+        }                                                                                                              \
+    } while (0)
 
 #if defined(GGML_BLAS_USE_ACCELERATE)
 #   include <Accelerate/Accelerate.h>
@@ -22,12 +35,25 @@ struct ggml_backend_blas_context {
     int n_threads = GGML_DEFAULT_N_THREADS;
     std::unique_ptr<char[]> work_data;
     size_t work_size = 0;
+    aclrtStream stream_handle = nullptr;
+    aclrtStream stream() {
+        if (stream_handle == nullptr) {
+            // If the device is not set here, destroying the stream later may cause a mismatch
+            // between the thread contexts where the stream was created and destroyed.
+            // However, I printed the device_id, thread_id, and stream, and they are all consistent.
+            ACL_CHECK(aclrtSetDevice(0));
+            ACL_CHECK(aclrtCreateStream(&stream_handle));
+        }
+        return stream_handle;
+    }
 #ifndef GGML_USE_OPENMP
     std::vector<std::future<void>> tasks;
 #endif
 };
 
 static void ggml_backend_blas_mul_mat(ggml_backend_blas_context * ctx, struct ggml_tensor * dst) {
+    ACL_CHECK(aclrtSetDevice(0));
+
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
@@ -140,11 +166,32 @@ static void ggml_backend_blas_mul_mat(ggml_backend_blas_context * ctx, struct gg
                 x = (float *) wdata + i02*ne_plane + i03*ne02*ne_plane;
             }
 
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        ne1, ne01, ne10,
-                        1.0f,   y, ne10,
-                                x, ne00,
-                        0.0f,   d, ne01);
+            CatlassKernel::KernelInfo kernelInfo;
+            kernelInfo.inputAddr = {
+                reinterpret_cast<uint8_t *>(const_cast<float *>(y)),
+                reinterpret_cast<uint8_t *>(const_cast<float *>(x))
+            };
+            kernelInfo.outputAddr = {reinterpret_cast<uint8_t *>(d)};
+            kernelInfo.inputDataType = ACL_FLOAT;
+            kernelInfo.outputDataType = ACL_FLOAT;
+            kernelInfo.m = ne1;
+            kernelInfo.n = ne01;
+            kernelInfo.k = ne10;
+
+            kernelInfo.lda = ne10;
+            kernelInfo.ldb = ne00;
+            kernelInfo.ldc = ne01;
+
+            kernelInfo.transA = false;
+            kernelInfo.transB = true;
+
+            CatlassKernel::BasicMatmul(1, ctx->stream(), kernelInfo);
+
+            //cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+            //            ne1, ne01, ne10,
+            //            1.0f,   y, ne10,
+            //                    x, ne00,
+            //            0.0f,   d, ne01);
         }
     }
 }
@@ -205,7 +252,28 @@ static void ggml_backend_blas_out_prod(ggml_backend_blas_context * ctx, struct g
     float * b = (float *) ((char *) src0->data);
     float * c = (float *) ((char *) dst->data);
 
-    cblas_sgemm(CblasRowMajor, transposeA, CblasNoTrans, m, n, k, 1.0, a, lda, b, n, 0.0, c, n);
+    CatlassKernel::KernelInfo kernelInfo;
+    kernelInfo.inputAddr = {
+        reinterpret_cast<uint8_t *>(const_cast<float *>(a)),
+        reinterpret_cast<uint8_t *>(const_cast<float *>(b))
+    };
+    kernelInfo.outputAddr = {reinterpret_cast<uint8_t *>(c)};
+    kernelInfo.inputDataType = ACL_FLOAT;
+    kernelInfo.outputDataType = ACL_FLOAT;
+    kernelInfo.m = m;
+    kernelInfo.n = n;
+    kernelInfo.k = k;
+
+    kernelInfo.lda = lda;
+    kernelInfo.ldb = n;
+    kernelInfo.ldc = n;
+
+    kernelInfo.transA = ggml_is_transposed(src1);
+    kernelInfo.transB = false;
+
+    CatlassKernel::BasicMatmul(1, ctx->stream(), kernelInfo);
+
+    // cblas_sgemm(CblasRowMajor, transposeA, CblasNoTrans, m, n, k, 1.0, a, lda, b, n, 0.0, c, n);
 
     GGML_UNUSED(ctx);
 }
@@ -340,8 +408,8 @@ static const char * ggml_backend_blas_device_get_description(ggml_backend_dev_t 
 
 static void ggml_backend_blas_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
     // TODO
-    *free = 0;
-    *total = 0;
+    *free = 1000;
+    *total = 1000;
 
     GGML_UNUSED(dev);
 }
@@ -506,6 +574,13 @@ static const struct ggml_backend_reg_i ggml_backend_blas_reg_i = {
 };
 
 ggml_backend_reg_t ggml_backend_blas_reg(void) {
+    static bool initialized = false;
+    if (!initialized) {
+        ACL_CHECK(aclInit(nullptr));
+        ACL_CHECK(aclrtSetDevice(0));
+        initialized = true;
+    }
+
     static struct ggml_backend_reg ggml_backend_blas_reg = {
         /* .api_version = */ GGML_BACKEND_API_VERSION,
         /* .iface       = */ ggml_backend_blas_reg_i,

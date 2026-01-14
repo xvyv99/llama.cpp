@@ -60,15 +60,20 @@ if (CANN_INSTALL_DIR)
     )
 
     if(SOC_VERSION STREQUAL "ascend310b1")
+        find_package(BLAS REQUIRED)
         message(STATUS "CANN: Adding customize opp for ascend310b1")
-        list(APPEND CANN_INCLUDE_DIRS
-            ${CANN_INSTALL_DIR}/opp/vendors/customize/op_api/include
-        )
-        link_directories(
-            ${CANN_INSTALL_DIR}/opp/vendors/customize/op_api/lib
-        )
+        # list(APPEND CANN_INCLUDE_DIRS
+        #    ${CANN_INSTALL_DIR}/opp/vendors/customize/op_api/include
+        # )
+        # link_directories(
+        #    ${CANN_INSTALL_DIR}/opp/vendors/customize/op_api/lib
+        # )
+        #list(APPEND CANN_LIBRARIES
+        #   cust_opapi
+        # )
         list(APPEND CANN_LIBRARIES
-            cust_opapi
+            ascend_blas
+            ${BLAS_LIBRARIES}
         )
     endif()
 

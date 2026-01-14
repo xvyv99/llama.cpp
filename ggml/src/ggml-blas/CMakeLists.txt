@@ -5,6 +5,23 @@ endif()
 #    set(BLA_SIZEOF_INTEGER 8)
 #endif()
 
+find_library(ASCEND_BLAS
+    NAMES libascend_blas.a
+    PATHS "/usr/local/lib"
+    NO_DEFAULT_PATH
+)
+
+if ("cann${CANN_INSTALL_DIR}" STREQUAL "cann" AND DEFINED ENV{ASCEND_TOOLKIT_HOME})
+    set(CANN_INSTALL_DIR $ENV{ASCEND_TOOLKIT_HOME})
+    message(STATUS "CANN: updated CANN_INSTALL_DIR from ASCEND_TOOLKIT_HOME=$ENV{ASCEND_TOOLKIT_HOME}")
+endif()
+
+set(CANN_INCLUDE_DIRS
+    ${CANN_INSTALL_DIR}/include
+    ${CANN_INSTALL_DIR}/include/aclnn
+    ${CANN_INSTALL_DIR}/acllib/include
+)
+
 set(BLA_VENDOR ${GGML_BLAS_VENDOR})
 find_package(BLAS)
 
@@ -15,7 +32,12 @@ if (BLAS_FOUND)
                              ggml-blas.cpp
                             )
 
-    if (${GGML_BLAS_VENDOR} MATCHES "Apple")
+    if (ASCEND_BLAS)
+        target_link_libraries(ggml-blas PRIVATE ${ASCEND_BLAS} ascendcl)
+        target_include_directories(ggml-blas PRIVATE ${ASCEND_BLAS_INCLUDE_DIR} ${CANN_INCLUDE_DIRS})
+        target_include_directories(ggml-blas PRIVATE ${CANN_INCLUDE_DIRS})
+        target_link_directories(ggml-blas PRIVATE ${CANN_INSTALL_DIR}/lib64)
+    elseif (${GGML_BLAS_VENDOR} MATCHES "Apple")
         add_compile_definitions(ACCELERATE_NEW_LAPACK)
         add_compile_definitions(ACCELERATE_LAPACK_ILP64)
         add_compile_definitions(GGML_BLAS_USE_ACCELERATE)
