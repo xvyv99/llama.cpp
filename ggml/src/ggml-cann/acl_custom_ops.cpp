@@ -19,20 +19,6 @@ static void aclnn_cast_custom(ggml_backend_cann_context & ctx,
     GGML_CANN_CALL_ACLNN_OP(ctx, CastCustom, acl_src, acl_dst);
 }
 
-void print_tensor_shape(const ggml_tensor * tensor) {
-    printf("Tensor shape: (");
-    for (int i = 0; i < 4; i++) {
-        printf("%" PRId64, tensor->ne[i]);
-        if (i < 4 - 1) {
-            printf(", ");
-        }
-    }
-    printf(")\n");
-
-    printf("\tTotal elements: %zu\n", ggml_nelements(tensor));
-    printf("\tElement type: %s\n", ggml_type_name(tensor->type));
-}
-
 static void ggml_cann_mat_mul_custom_fp(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     ggml_tensor * weight = dst->src[0];  // weight
     ggml_tensor * input  = dst->src[1];  // input
