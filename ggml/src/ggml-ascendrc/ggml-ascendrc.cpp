@@ -1,21 +1,91 @@
 #include "ggml-impl.h"
 #include "ggml-ascendrc.h"
 #include "ggml-backend-impl.h"
+#include "ggml.h"
 
 #include <future>
 #include <vector>
 #include <cstring>
+#include <iostream>
+
+#include <acl/acl.h>
+#include <ascend_blas.h>
+
+#define GGML_CANN_MAX_STREAMS 8
+
+// Macro function for unwinding acl errors.
+#define ACL_CHECK(status)                                                                                              \
+    do {                                                                                                               \
+        aclError error = status;                                                                                       \
+        if (error != ACL_ERROR_NONE) {                                                                                 \
+            std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << error << std::endl;                            \
+        }                                                                                                              \
+    } while (0)
+
+thread_local int g_current_ascendrc_device = -1;
+
+void ggml_ascendrc_set_device(const int32_t device) {
+    // int current_device = -1;
+    // Note: In some CANN versions, if no device has been set yet,
+    //       aclrtGetDevice(&current_device) may return 0 by default.
+    // aclrtGetDevice(&current_device);
+
+    // If the current device is already the target one, no need to switch.
+    if (device == g_current_ascendrc_device) {
+        return;
+    }
+
+    // Switch to the new device.
+    ACL_CHECK(aclrtSetDevice(device));
+
+    // Update the global device record.
+    g_current_ascendrc_device = device;
+}
 
 struct ggml_backend_ascendrc_context {
+    int32_t     device;               /**< Device ID. */
+    std::string name;                 /**< Name of the device. */
+    std::string description;          /**< Description of the device. */
     int n_threads = GGML_DEFAULT_N_THREADS;
     std::unique_ptr<char[]> work_data;
     size_t work_size = 0;
+    aclrtStream streams[GGML_CANN_MAX_STREAMS] = { nullptr };
+    aclrtStream stream(int stream) {
+        if (streams[stream] == nullptr) {
+            // If the device is not set here, destroying the stream later may cause a mismatch
+            // between the thread contexts where the stream was created and destroyed.
+            // However, I printed the device_id, thread_id, and stream, and they are all consistent.
+            ACL_CHECK(aclrtSetDevice(device));
+            ACL_CHECK(aclrtCreateStream(&streams[stream]));
+        }
+        return streams[stream];
+    }
+
+    aclrtStream stream() { return stream(0); }
+
 #ifndef GGML_USE_OPENMP
     std::vector<std::future<void>> tasks;
 #endif
+
+    explicit ggml_backend_ascendrc_context(int device) : device(device), name("AscendRC" + std::to_string(device)) {
+        ggml_ascendrc_set_device(device);
+        description = aclrtGetSocName();
+    }
+
+    ~ggml_backend_ascendrc_context() {
+        ggml_ascendrc_set_device(device);
+
+        for (int i = 0; i < GGML_CANN_MAX_STREAMS; ++i) {
+            if (streams[i] != nullptr) {
+                ACL_CHECK(aclrtDestroyStream(streams[i]));
+            }
+        }
+    }
 };
 
 static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, struct ggml_tensor * dst) {
+    ggml_ascendrc_set_device(0);
+
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
@@ -42,65 +112,17 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
     const int64_t r2 = ne12/ne02;
     const int64_t r3 = ne13/ne03;
 
-    const int64_t ne_plane      = ne01*ne00;
-    const size_t  desired_wsize = type == GGML_TYPE_F32 ? 0 : ne03*ne02*ne_plane*sizeof(float);
-
-    if (ctx->work_size < desired_wsize) {
-        ctx->work_data.reset(new char[desired_wsize]);
-        ctx->work_size = desired_wsize;
-    }
-    void * wdata = ctx->work_data.get();
-
-    // convert src0 to float
-    if (type != GGML_TYPE_F32) {
-        const auto * type_traits = ggml_get_type_traits(type);
-        ggml_to_float_t const to_float = type_traits->to_float;
-
-        for (int64_t i03 = 0; i03 < ne03; i03++) {
-            for (int64_t i02 = 0; i02 < ne02; i02++) {
-                const void  *       x      = (char *)  src0->data + i02*nb02          + i03*nb03;
-                      float * const wplane = (float *) wdata      + i02*ne_plane      + i03*ne02*ne_plane;
-
-                const int min_cols_per_thread = 4096;
-                const int min_rows_per_thread = std::max((int)(min_cols_per_thread/ne00), 1);
-                const int n_threads = std::max(std::min(ctx->n_threads, (int)(ne01/min_rows_per_thread)), 1);
-
-#ifdef GGML_USE_OPENMP
-                #pragma omp parallel for num_threads(n_threads)
-                for (int64_t i01 = 0; i01 < ne01; i01++) {
-                    to_float((const char *) x + i01*nb01, wplane + i01*ne00, ne00);
-                }
-#else
-                for (int i = 1; i < n_threads; i++) {
-                    const int64_t start =       i*ne01/n_threads;
-                    const int64_t end   = (i + 1)*ne01/n_threads;
-                    if (start < end) {
-                        ctx->tasks.push_back(std::async(std::launch::async, [=]() {
-                            for (int64_t i01 = start; i01 < end; i01++) {
-                                to_float((const char *) x + i01*nb01, wplane + i01*ne00, ne00);
-                            }
-                        }));
-                    }
-                }
-                {
-                    // reuse the current thread for the first task
-                    const int64_t start = 0;
-                    const int64_t end   = ne01/n_threads;
-                    for (int64_t i01 = start; i01 < end; i01++) {
-                        to_float((const char *) x + i01*nb01, wplane + i01*ne00, ne00);
-                    }
-                }
-#endif
-            }
-        }
-
-#ifndef GGML_USE_OPENMP
-        // wait for all tasks to finish
-        for (auto & task : ctx->tasks) {
-            task.get();
-        }
-        ctx->tasks.clear();
-#endif
+    // Map ggml type to AscendBLAS data type
+    AscendBLAS::DataType ascend_dtype;
+    switch (type) {
+        case GGML_TYPE_F32:
+            ascend_dtype = AscendBLAS::DataType::FP32;
+            break;
+        case GGML_TYPE_F16:
+            ascend_dtype = AscendBLAS::DataType::FP16;
+            break;
+        default:
+            GGML_ABORT("Unsupported type for AscendBLAS");
     }
 
     for (int64_t i13 = 0; i13 < ne13; i13++) {
@@ -108,21 +130,56 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
             const int64_t i03 = i13/r3;
             const int64_t i02 = i12/r2;
 
-            const float * x = (float *) ((char *) src0->data + i02*nb02 + i03*nb03);
-            const float * y = (float *) ((char *) src1->data + i12*nb12 + i13*nb13);
-                  float * d = (float *) ((char *)  dst->data + i12*nb2  + i13*nb3);
+            const void * x = (char *) src0->data + i02*nb02 + i03*nb03;
+            const float * y_f32 = (float *) ((char *) src1->data + i12*nb12 + i13*nb13);
+            float * d_f32 = (float *) ((char *) dst->data + i12*nb2 + i13*nb3);
 
-            if (type != GGML_TYPE_F32) {
-                x = (float *) wdata + i02*ne_plane + i03*ne02*ne_plane;
+            if (type == GGML_TYPE_F16) {
+                // For FP16: convert src1 (FP32) to FP16, compute, then convert dst back to FP32
+                // Allocate temporary buffers on host
+                size_t ne_src1 = ne1 * ne10;
+                size_t ne_dst = ne1 * ne01;
+
+                // Use work_data buffer for temporary FP16 storage
+                size_t needed_size = (ne_src1 + ne_dst) * sizeof(uint16_t);
+                if (ctx->work_size < needed_size) {
+                    ctx->work_data.reset(new char[needed_size]);
+                    ctx->work_size = needed_size;
+                }
+
+                uint16_t * src1_fp16 = (uint16_t *)ctx->work_data.get();
+                uint16_t * dst_fp16 = src1_fp16 + ne_src1;
+
+                for (size_t i=0;i<ne_src1;i++) {
+                    src1_fp16[i] = GGML_FP32_TO_FP16(y_f32[i]);
+                }
+
+                // Call AscendBLAS Gemm with FP16
+                AscendBLAS::Gemm(
+                    AscendBLAS::Transpose::NoTrans,
+                    AscendBLAS::Transpose::Trans,
+                    ne1, ne01, ne10,
+                    src1_fp16, ne10,
+                    x, ne00,
+                    dst_fp16, ne01,
+                    ascend_dtype,
+                    ctx->stream());
+
+                for (size_t i=0;i<ne_dst;i++) {
+                    d_f32[i] = GGML_FP16_TO_FP32(dst_fp16[i]);
+                }
+            } else {
+                // FP32 path - direct call
+                AscendBLAS::Gemm(
+                    AscendBLAS::Transpose::NoTrans,
+                    AscendBLAS::Transpose::Trans,
+                    ne1, ne01, ne10,
+                    y_f32, ne10,
+                    x, ne00,
+                    d_f32, ne01,
+                    ascend_dtype,
+                    ctx->stream());
             }
-
-            /*
-            cascendrc_sgemm(CascendrcRowMajor, CascendrcNoTrans, CascendrcTrans,
-                        ne1, ne01, ne10,
-                        1.0f,   y, ne10,
-                                x, ne00,
-                        0.0f,   d, ne01);
-            */
         }
     }
 }
@@ -130,9 +187,9 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
 // backend interface
 
 static const char * ggml_backend_ascendrc_get_name(ggml_backend_t backend) {
-    return "AscendRC";
+    ggml_backend_ascendrc_context * ascendrc_ctx = (ggml_backend_ascendrc_context *) backend->context;
 
-    GGML_UNUSED(backend);
+    return ascendrc_ctx->name.c_str();
 }
 
 static void ggml_backend_ascendrc_free(ggml_backend_t backend) {
@@ -196,7 +253,7 @@ static ggml_guid_t ggml_backend_ascendrc_guid(void) {
 }
 
 ggml_backend_t ggml_backend_ascendrc_init(void) {
-    ggml_backend_ascendrc_context * ctx = new ggml_backend_ascendrc_context;
+    ggml_backend_ascendrc_context * ctx = new ggml_backend_ascendrc_context(0);
 
     ggml_backend_t backend = new ggml_backend {
         /* .guid    = */ ggml_backend_ascendrc_guid(),
@@ -228,7 +285,7 @@ static const char * ggml_backend_ascendrc_device_get_name(ggml_backend_dev_t dev
 }
 
 static const char * ggml_backend_ascendrc_device_get_description(ggml_backend_dev_t dev) {
-    return "AscendBLAS backend for Ascend310B (fallback for chips without full CANN ops)";
+    return "fallback for chips without full CANN ops";
 
     GGML_UNUSED(dev);
 }
@@ -309,17 +366,8 @@ static bool ggml_backend_ascendrc_device_supports_op(ggml_backend_dev_t dev, con
                    ggml_is_contiguous(src1) &&
                    src1->type == GGML_TYPE_F32 &&
                    (ne0 >= min_batch && ne1 >= min_batch && ne10 >= min_batch) &&
-                   (src0->type == GGML_TYPE_F32 || ggml_get_type_traits(src0->type)->to_float != NULL);
+                   (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16);
         }
-
-        case GGML_OP_OUT_PROD:
-            return op->src[0]->type == GGML_TYPE_F32 &&
-                   op->src[1]->type == GGML_TYPE_F32 &&
-                   ggml_is_matrix(src0) &&
-                   ggml_is_matrix(src1) &&
-                   ggml_is_contiguous(src0) &&
-                   (ggml_is_contiguous(src1) || ggml_is_transposed(src1)) &&
-                   (src0->type == GGML_TYPE_F32 || ggml_get_type_traits(src0->type)->to_float != NULL);
 
         default:
             return false;
