@@ -84,7 +84,7 @@ struct ggml_backend_ascendrc_context {
 };
 
 static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, struct ggml_tensor * dst) {
-    ggml_ascendrc_set_device(0);
+    ggml_ascendrc_set_device(ctx->device);
 
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
@@ -248,11 +248,14 @@ static struct ggml_backend_i ascendrc_backend_i = {
 };
 
 static ggml_guid_t ggml_backend_ascendrc_guid(void) {
-    static ggml_guid guid = { 0x12, 0xa8, 0xae, 0xf4, 0xc0, 0x1e, 0x61, 0x97, 0x8f, 0xeb, 0x33, 0x04, 0xa1, 0x33, 0x51, 0x2d };
+    static ggml_guid guid = { 0x50, 0xb9, 0x22, 0xe1, 0x40, 0xbf, 0x40, 0x0c, 0x86, 0xaf, 0x61, 0x89, 0x1b, 0xca, 0xa5, 0xb7 };
+
     return &guid;
 }
 
 ggml_backend_t ggml_backend_ascendrc_init(void) {
+    aclInit(nullptr);
+
     ggml_backend_ascendrc_context * ctx = new ggml_backend_ascendrc_context(0);
 
     ggml_backend_t backend = new ggml_backend {
