@@ -146,7 +146,6 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
                 float * d_f32 = (float *) ((char *) dst->data + i12*nb2 + i13*nb3);
 
                 uint16_t * src1_fp16 = (uint16_t *)ctx->work_data.get();
-                uint16_t * dst_fp16 = src1_fp16 + ne_src1;
 
                 // Convert src1 from FP32 to FP16
                 {
@@ -168,15 +167,7 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
                         src1_fp16, ACL_FLOAT16, (int)ne10,
                         x, ACL_FLOAT16, (int)ne00,
                         &beta,
-                        dst_fp16, ACL_FLOAT16, (int)ne01);
-                }
-
-                // Convert result back to FP32
-                {
-                    ZoneScopedN("cpu_convert_f16_to_f32");
-                    for (size_t i = 0; i < ne_dst; i++) {
-                        d_f32[i] = GGML_FP16_TO_FP32(dst_fp16[i]);
-                    }
+                        d_f32, ACL_FLOAT, (int)ne01);
                 }
             }
         }
