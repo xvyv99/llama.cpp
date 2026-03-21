@@ -11,6 +11,10 @@
 #include <acl/acl.h>
 #include <ascend_blas.h>
 
+#ifdef TRACY_ENABLE
+#include "tracy/Tracy.hpp"
+#endif
+
 #define GGML_CANN_MAX_STREAMS 8
 
 // Macro function for unwinding acl errors.
@@ -84,6 +88,9 @@ struct ggml_backend_ascendrc_context {
 };
 
 static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, struct ggml_tensor * dst) {
+    ZoneScopedNC("ascend_mul_mat", tracy::Color::Purple);
+    ZoneValue(dst->ne[0] * dst->ne[1]);
+
     ggml_ascendrc_set_device(ctx->device);
 
     const struct ggml_tensor * src0 = dst->src[0];
@@ -150,25 +157,35 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
                 uint16_t * src1_fp16 = (uint16_t *)ctx->work_data.get();
                 uint16_t * dst_fp16 = src1_fp16 + ne_src1;
 
-                for (size_t i=0;i<ne_src1;i++) {
-                    src1_fp16[i] = GGML_FP32_TO_FP16(y_f32[i]);
+                {
+                    ZoneScopedN("cpu_convert_f32_to_f16");
+                    for (size_t i=0;i<ne_src1;i++) {
+                        src1_fp16[i] = GGML_FP32_TO_FP16(y_f32[i]);
+                    }
                 }
 
-                // Call AscendBLAS Gemm with FP16
-                AscendBLAS::Gemm(
-                    AscendBLAS::Transpose::NoTrans,
-                    AscendBLAS::Transpose::Trans,
-                    ne1, ne01, ne10,
-                    src1_fp16, ne10,
-                    x, ne00,
-                    dst_fp16, ne01,
-                    ascend_dtype,
-                    ctx->stream());
+                {
+                    // Call AscendBLAS Gemm with FP16
+                    ZoneScopedN("ascendblas_gemm_fp16");
+                    AscendBLAS::Gemm(
+                        AscendBLAS::Transpose::NoTrans,
+                        AscendBLAS::Transpose::Trans,
+                        ne1, ne01, ne10,
+                        src1_fp16, ne10,
+                        x, ne00,
+                        dst_fp16, ne01,
+                        ascend_dtype,
+                        ctx->stream());
+                }
 
-                for (size_t i=0;i<ne_dst;i++) {
-                    d_f32[i] = GGML_FP16_TO_FP32(dst_fp16[i]);
+                {
+                    ZoneScopedN("cpu_convert_f16_to_f32");
+                    for (size_t i=0;i<ne_dst;i++) {
+                        d_f32[i] = GGML_FP16_TO_FP32(dst_fp16[i]);
+                    }
                 }
             } else {
+                ZoneScopedN("ascendblas_gemm_fp32");
                 // FP32 path - direct call
                 AscendBLAS::Gemm(
                     AscendBLAS::Transpose::NoTrans,

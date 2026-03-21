@@ -12,6 +12,10 @@
 #include <cfloat>
 #include <cmath>
 
+#ifdef TRACY_ENABLE
+#include "tracy/Tracy.hpp"
+#endif
+
 // ggml_compute_forward_dup
 
 static void ggml_compute_forward_dup_same_cont(
@@ -8118,6 +8122,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
         int64_t ic_start, int64_t ic_end,
         float * partials, int64_t partial_stride) {
 
+    ZoneScoped;
     const bool write_partials = (partials != nullptr);
     const ggml_tensor * q     = dst->src[0];
     const ggml_tensor * k     = dst->src[1];
@@ -8353,6 +8358,8 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
         const ggml_compute_params * params,
         ggml_tensor * dst,
         int ir0, int ir1) {
+    ZoneScoped;
+
     const ggml_tensor * q     = dst->src[0];
     const ggml_tensor * k     = dst->src[1];
     const ggml_tensor * v     = dst->src[2];
@@ -8645,6 +8652,8 @@ static void ggml_flash_attn_ext_reduce_partials(
         const int64_t n_chunks,
         const int64_t chunk_size) {
 
+    ZoneScoped;
+
     const ggml_tensor * q = dst->src[0];
     const ggml_tensor * k = dst->src[1];
     const ggml_tensor * v = dst->src[2];
@@ -8713,6 +8722,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
 
+    ZoneScoped;
     const ggml_tensor * q     = dst->src[0];
     const ggml_tensor * k     = dst->src[1];
     const ggml_tensor * v     = dst->src[2];

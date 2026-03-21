@@ -50,6 +50,10 @@
 #include "llamafile/sgemm.h"
 #endif
 
+#ifdef TRACY_ENABLE
+#include "tracy/TracyC.h"
+#endif
+
 // Note: once we move threading into a separate C++ file
 // will use std::hardware_destructive_interference_size instead of hardcoding it here
 // and we'll use C++ attribute syntax.
@@ -1716,7 +1720,13 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_MUL:
             {
+#ifdef TRACY_ENABLE
+                TracyCZoneN(ctx, "GGML_OP_MUL", true);
+#endif
                 ggml_compute_forward_mul(params, tensor);
+#ifdef TRACY_ENABLE
+                TracyCZoneEnd(ctx);
+#endif
             } break;
         case GGML_OP_DIV:
             {
@@ -1840,7 +1850,13 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_SET_ROWS:
             {
+#ifdef TRACY_ENABLE
+                TracyCZoneN(ctx, "GGML_OP_SET_ROWS", true);
+#endif
                 ggml_compute_forward_set_rows(params, tensor);
+#ifdef TRACY_ENABLE
+                TracyCZoneEnd(ctx);
+#endif
             } break;
         case GGML_OP_DIAG:
             {
@@ -1964,7 +1980,13 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_FLASH_ATTN_EXT:
             {
+#ifdef TRACY_ENABLE
+                TracyCZoneN(ctx, "GGML_OP_FLASH_ATTN_EXT", true);
+#endif
                 ggml_compute_forward_flash_attn_ext(params, tensor);
+#ifdef TRACY_ENABLE
+                TracyCZoneEnd(ctx);
+#endif
             } break;
         case GGML_OP_FLASH_ATTN_BACK:
             {
@@ -1995,7 +2017,13 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_GLU:
             {
+#ifdef TRACY_ENABLE
+                TracyCZoneN(ctx, "GGML_OP_GLU", true);
+#endif
                 ggml_compute_forward_glu(params, tensor);
+#ifdef TRACY_ENABLE
+                TracyCZoneEnd(ctx);
+#endif
             } break;
         case GGML_OP_GET_REL_POS:
             {

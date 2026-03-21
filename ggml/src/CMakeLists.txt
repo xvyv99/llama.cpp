@@ -3,6 +3,12 @@ include("../cmake/common.cmake")
 
 add_compile_definitions(GGML_SCHED_MAX_COPIES=${GGML_SCHED_MAX_COPIES})
 
+if (GGML_TRACY)
+    # Add tracy include directory for all targets in this directory and subdirectories
+    get_filename_component(TRACY_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/tracy ABSOLUTE)
+    include_directories(${TRACY_INCLUDE_DIR})
+endif()
+
 # enable libstdc++ assertions for debug builds
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_definitions($<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)
@@ -482,6 +488,15 @@ endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "visionOS")
     target_compile_definitions(ggml-base PUBLIC _DARWIN_C_SOURCE)
+endif()
+
+if (GGML_TRACY)
+    message(STATUS "Tracy profiler enabled")
+    # Get the relative path from ggml to vendor/tracy
+    get_filename_component(TRACY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/tracy ABSOLUTE)
+    target_sources(ggml-base PRIVATE ${TRACY_DIR}/TracyClient.cpp)
+    target_include_directories(ggml-base PRIVATE ${TRACY_DIR})
+    target_compile_definitions(ggml-base PUBLIC TRACY_ENABLE)
 endif()
 
 if (BUILD_SHARED_LIBS)

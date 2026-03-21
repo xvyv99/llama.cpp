@@ -270,6 +270,8 @@ option(GGML_ASCENDRC                        "ggml: use AscendBLAS backend for As
 option(GGML_BUILD_TESTS    "ggml: build tests"    ${GGML_STANDALONE})
 option(GGML_BUILD_EXAMPLES "ggml: build examples" ${GGML_STANDALONE})
 
+option(GGML_TRACY          "ggml: enable Tracy profiler" OFF)
+
 #
 # dependencies
 #
