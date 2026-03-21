@@ -1,8 +1,9 @@
 find_library(ASCEND_BLAS
-    NAMES libascend_blas.a
+    NAMES libascblas.a
     PATHS "/usr/local/lib"
     NO_DEFAULT_PATH
 )
+set(ASCEND_BLAS_INCLUDE_DIR /usr/local/include)
 
 if ("cann${CANN_INSTALL_DIR}" STREQUAL "cann" AND DEFINED ENV{ASCEND_TOOLKIT_HOME})
     set(CANN_INSTALL_DIR $ENV{ASCEND_TOOLKIT_HOME})

@@ -9,7 +9,7 @@
 #include <iostream>
 
 #include <acl/acl.h>
-#include <ascend_blas.h>
+#include <ascblas.h>
 
 #ifdef TRACY_ENABLE
 #include "tracy/Tracy.hpp"
@@ -119,18 +119,21 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
     const int64_t r2 = ne12/ne02;
     const int64_t r3 = ne13/ne03;
 
-    // Map ggml type to AscendBLAS data type
-    AscendBLAS::DataType ascend_dtype;
+    // Map ggml type to aclDataType
+    aclDataType acl_dtype;
     switch (type) {
         case GGML_TYPE_F32:
-            ascend_dtype = AscendBLAS::DataType::FP32;
+            acl_dtype = ACL_FLOAT;
             break;
         case GGML_TYPE_F16:
-            ascend_dtype = AscendBLAS::DataType::FP16;
+            acl_dtype = ACL_FLOAT16;
             break;
         default:
             GGML_ABORT("Unsupported type for AscendBLAS");
     }
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
 
     for (int64_t i13 = 0; i13 < ne13; i13++) {
         for (int64_t i12 = 0; i12 < ne12; i12++) {
@@ -167,15 +170,16 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
                 {
                     // Call AscendBLAS Gemm with FP16
                     ZoneScopedN("ascendblas_gemm_fp16");
-                    AscendBLAS::Gemm(
-                        AscendBLAS::Transpose::NoTrans,
-                        AscendBLAS::Transpose::Trans,
-                        ne1, ne01, ne10,
-                        src1_fp16, ne10,
-                        x, ne00,
-                        dst_fp16, ne01,
-                        ascend_dtype,
-                        ctx->stream());
+                    ascblasGemmEx(
+                        ctx->stream(),
+                        ASCBLAS_OP_N,
+                        ASCBLAS_OP_T,
+                        (int)ne1, (int)ne01, (int)ne10,
+                        &alpha,
+                        src1_fp16, ACL_FLOAT16, (int)ne10,
+                        x, ACL_FLOAT16, (int)ne00,
+                        &beta,
+                        dst_fp16, ACL_FLOAT16, (int)ne01);
                 }
 
                 {
@@ -187,15 +191,16 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
             } else {
                 ZoneScopedN("ascendblas_gemm_fp32");
                 // FP32 path - direct call
-                AscendBLAS::Gemm(
-                    AscendBLAS::Transpose::NoTrans,
-                    AscendBLAS::Transpose::Trans,
-                    ne1, ne01, ne10,
-                    y_f32, ne10,
-                    x, ne00,
-                    d_f32, ne01,
-                    ascend_dtype,
-                    ctx->stream());
+                ascblasGemmEx(
+                    ctx->stream(),
+                    ASCBLAS_OP_N,
+                    ASCBLAS_OP_T,
+                    (int)ne1, (int)ne01, (int)ne10,
+                    &alpha,
+                    y_f32, ACL_FLOAT, (int)ne10,
+                    x, ACL_FLOAT, (int)ne00,
+                    &beta,
+                    d_f32, ACL_FLOAT, (int)ne01);
             }
         }
     }
