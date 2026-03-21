@@ -119,56 +119,46 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
     const int64_t r2 = ne12/ne02;
     const int64_t r3 = ne13/ne03;
 
-    // Map ggml type to aclDataType
-    aclDataType acl_dtype;
-    switch (type) {
-        case GGML_TYPE_F32:
-            acl_dtype = ACL_FLOAT;
-            break;
-        case GGML_TYPE_F16:
-            acl_dtype = ACL_FLOAT16;
-            break;
-        default:
-            GGML_ABORT("Unsupported type for AscendBLAS");
-    }
-
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
-    for (int64_t i13 = 0; i13 < ne13; i13++) {
-        for (int64_t i12 = 0; i12 < ne12; i12++) {
-            const int64_t i03 = i13/r3;
-            const int64_t i02 = i12/r2;
+    if (type == GGML_TYPE_F16) {
+        ZoneScopedN("ascendblas_gemm_fp16");
 
-            const void * x = (char *) src0->data + i02*nb02 + i03*nb03;
-            const float * y_f32 = (float *) ((char *) src1->data + i12*nb12 + i13*nb13);
-            float * d_f32 = (float *) ((char *) dst->data + i12*nb2 + i13*nb3);
+        // For FP16: need to convert src1 (FP32) to FP16 for each batch
+        size_t ne_src1 = ne1 * ne10;
+        size_t ne_dst = ne1 * ne01;
 
-            if (type == GGML_TYPE_F16) {
-                // For FP16: convert src1 (FP32) to FP16, compute, then convert dst back to FP32
-                // Allocate temporary buffers on host
-                size_t ne_src1 = ne1 * ne10;
-                size_t ne_dst = ne1 * ne01;
+        // Allocate workspace for temporary FP16 storage
+        size_t needed_size = (ne_src1 + ne_dst) * sizeof(uint16_t);
+        if (ctx->work_size < needed_size) {
+            ctx->work_data.reset(new char[needed_size]);
+            ctx->work_size = needed_size;
+        }
 
-                // Use work_data buffer for temporary FP16 storage
-                size_t needed_size = (ne_src1 + ne_dst) * sizeof(uint16_t);
-                if (ctx->work_size < needed_size) {
-                    ctx->work_data.reset(new char[needed_size]);
-                    ctx->work_size = needed_size;
-                }
+        for (int64_t i13 = 0; i13 < ne13; i13++) {
+            for (int64_t i12 = 0; i12 < ne12; i12++) {
+                const int64_t i03 = i13/r3;
+                const int64_t i02 = i12/r2;
+
+                const void * x = (char *) src0->data + i02*nb02 + i03*nb03;
+                const float * y_f32 = (float *) ((char *) src1->data + i12*nb12 + i13*nb13);
+                float * d_f32 = (float *) ((char *) dst->data + i12*nb2 + i13*nb3);
 
                 uint16_t * src1_fp16 = (uint16_t *)ctx->work_data.get();
+                uint16_t * dst_fp16 = src1_fp16 + ne_src1;
 
+                // Convert src1 from FP32 to FP16
                 {
                     ZoneScopedN("cpu_convert_f32_to_f16");
-                    for (size_t i=0;i<ne_src1;i++) {
+                    for (size_t i = 0; i < ne_src1; i++) {
                         src1_fp16[i] = GGML_FP32_TO_FP16(y_f32[i]);
                     }
                 }
 
+                // Call single GEMM
                 {
-                    // Call AscendBLAS Gemm with FP16
-                    ZoneScopedN("ascendblas_gemm_fp16");
+                    ZoneScopedN("ascendblas_gemm_fp16_single");
                     ascblasGemmEx(
                         ctx->stream(),
                         ASCBLAS_OP_N,
@@ -178,11 +168,31 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
                         src1_fp16, ACL_FLOAT16, (int)ne10,
                         x, ACL_FLOAT16, (int)ne00,
                         &beta,
-                        d_f32, ACL_FLOAT, (int)ne01);
+                        dst_fp16, ACL_FLOAT16, (int)ne01);
                 }
-            } else {
-                ZoneScopedN("ascendblas_gemm_fp32");
-                // FP32 path - direct call
+
+                // Convert result back to FP32
+                {
+                    ZoneScopedN("cpu_convert_f16_to_f32");
+                    for (size_t i = 0; i < ne_dst; i++) {
+                        d_f32[i] = GGML_FP16_TO_FP32(dst_fp16[i]);
+                    }
+                }
+            }
+        }
+    } else {
+        ZoneScopedN("ascendblas_gemm_fp32");
+
+        // FP32 path - call single GEMM for each batch
+        for (int64_t i13 = 0; i13 < ne13; i13++) {
+            for (int64_t i12 = 0; i12 < ne12; i12++) {
+                const int64_t i03 = i13/r3;
+                const int64_t i02 = i12/r2;
+
+                const void * x = (char *) src0->data + i02*nb02 + i03*nb03;
+                const float * y_f32 = (float *) ((char *) src1->data + i12*nb12 + i13*nb13);
+                float * d_f32 = (float *) ((char *) dst->data + i12*nb2 + i13*nb3);
+
                 ascblasGemmEx(
                     ctx->stream(),
                     ASCBLAS_OP_N,
