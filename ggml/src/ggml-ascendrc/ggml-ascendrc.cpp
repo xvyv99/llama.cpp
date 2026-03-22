@@ -88,8 +88,10 @@ struct ggml_backend_ascendrc_context {
 };
 
 static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, struct ggml_tensor * dst) {
+#ifdef TRACY_ENABLE
     ZoneScopedNC("ascend_mul_mat", tracy::Color::Purple);
     ZoneValue(dst->ne[0] * dst->ne[1]);
+#endif
 
     ggml_ascendrc_set_device(ctx->device);
 
@@ -123,7 +125,9 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
     const float beta = 0.0f;
 
     if (type == GGML_TYPE_F16) {
+#ifdef TRACY_ENABLE
         ZoneScopedN("ascendblas_gemm_fp16");
+#endif
 
         // For FP16: need to convert src1 (FP32) to FP16 for each batch
         size_t ne_src1 = ne1 * ne10;
@@ -149,7 +153,9 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
 
                 // Convert src1 from FP32 to FP16
                 {
+#ifdef TRACY_ENABLE
                     ZoneScopedN("cpu_convert_f32_to_f16");
+#endif
                     for (size_t i = 0; i < ne_src1; i++) {
                         src1_fp16[i] = GGML_FP32_TO_FP16(y_f32[i]);
                     }
@@ -157,7 +163,9 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
 
                 // Call single GEMM
                 {
+#ifdef TRACY_ENABLE
                     ZoneScopedN("ascendblas_gemm_fp16_single");
+#endif
                     ascblasGemmEx(
                         ctx->stream(),
                         ASCBLAS_OP_N,
@@ -172,7 +180,9 @@ static void ggml_backend_ascendrc_mul_mat(ggml_backend_ascendrc_context * ctx, s
             }
         }
     } else {
+#ifdef TRACY_ENABLE
         ZoneScopedN("ascendblas_gemm_fp32");
+#endif
 
         // FP32 path - call single GEMM for each batch
         for (int64_t i13 = 0; i13 < ne13; i13++) {

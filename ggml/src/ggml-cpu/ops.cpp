@@ -8122,7 +8122,9 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
         int64_t ic_start, int64_t ic_end,
         float * partials, int64_t partial_stride) {
 
+#ifdef TRACY_ENABLE
     ZoneScoped;
+#endif
     const bool write_partials = (partials != nullptr);
     const ggml_tensor * q     = dst->src[0];
     const ggml_tensor * k     = dst->src[1];
@@ -8358,7 +8360,9 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
         const ggml_compute_params * params,
         ggml_tensor * dst,
         int ir0, int ir1) {
+#ifdef TRACY_ENABLE
     ZoneScoped;
+#endif
 
     const ggml_tensor * q     = dst->src[0];
     const ggml_tensor * k     = dst->src[1];
@@ -8652,7 +8656,9 @@ static void ggml_flash_attn_ext_reduce_partials(
         const int64_t n_chunks,
         const int64_t chunk_size) {
 
+#ifdef TRACY_ENABLE
     ZoneScoped;
+#endif
 
     const ggml_tensor * q = dst->src[0];
     const ggml_tensor * k = dst->src[1];
@@ -8722,7 +8728,9 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
 
+#ifdef TRACY_ENABLE
     ZoneScoped;
+#endif
     const ggml_tensor * q     = dst->src[0];
     const ggml_tensor * k     = dst->src[1];
     const ggml_tensor * v     = dst->src[2];
